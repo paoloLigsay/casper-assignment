@@ -58,6 +58,21 @@ class ModificationExtractionResult(BaseModel):
     )
 
 
+class NormalizedInstructions(BaseModel):
+    """Wrapper for recipe instructions after splitting compound steps.
+
+    RecipeModifier's remove/replace operations act on whole instruction list
+    items - a step bundling two unrelated actions (e.g. "Dissolve baking soda
+    in hot water. Add to batter along with salt.") means removing content for
+    one action can silently delete the other. This holds the same instructions
+    with any such compound steps split into atomic, self-contained ones.
+    """
+
+    instructions: List[str] = Field(
+        description="Instruction steps with compound steps split into one action per step"
+    )
+
+
 class SourceReview(BaseModel):
     """Reference to the original review that suggested the modification."""
 

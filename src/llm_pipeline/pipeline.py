@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .enhanced_recipe_generator import EnhancedRecipeGenerator
+from .instruction_synthesizer import InstructionSynthesizer
 from .models import EnhancedRecipe, Recipe, Review
 from .recipe_modifier import RecipeModifier
 from .tweak_extractor import TweakExtractor
@@ -47,6 +48,7 @@ class LLMAnalysisPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize pipeline components
+        self.instruction_synthesizer = InstructionSynthesizer(api_key=openai_api_key)
         self.tweak_extractor = TweakExtractor(api_key=openai_api_key)
         self.recipe_modifier = RecipeModifier()
         self.enhanced_generator = EnhancedRecipeGenerator(
@@ -151,6 +153,13 @@ class LLMAnalysisPipeline:
             recipe_data = self.load_recipe_data(recipe_file)
             recipe = self.parse_recipe_data(recipe_data)
             reviews = self.parse_reviews_data(recipe_data)
+
+            # Normalize compound instruction steps before anything else touches
+            # them, so remove/replace edits can't take unrelated content down
+            # with them, and so this becomes the "original" baseline for diffing.
+            recipe.instructions = self.instruction_synthesizer.synthesize(
+                recipe.instructions
+            )
 
             logger.info(f"Recipe: {recipe.title}")
             self._log_list("Ingredients", recipe.ingredients)

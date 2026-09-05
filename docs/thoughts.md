@@ -64,7 +64,7 @@ Does the system scale beyond the 5 examples we gave? Are there poor assumptions 
 """
 
 ## Challenges | Cases / Issues found during testing
-### There are cases where 1 instruction contains 2 actions causing silent fail during modification
+### a. There are cases where 1 instruction contains 2 actions causing silent fail during modification
 E.g., "Dissolve baking soda in hot water. Add to batter along with salt."
 
 **What happened (live evidence, chocolate chip cookie recipe, cream-of-tartar review):**
@@ -112,3 +112,61 @@ sharing one list item). Any edit targeting one of those actions risks taking the
 2. This does **not** by itself fix the missing-ingredient-removal half (`"2 teaspoons hot water"`
    never removed) — that needs the separate prompt-scope fix already noted in item 3's direction
    (checking that an edit's `find` scope matches what `reasoning` actually describes).
+
+### b. There are cases where an edit's target list doesn't match where its find text actually lives, causing the edit to be dropped
+
+The instruction-synthesizer pass above (item 1's fix direction) was implemented — it splits
+compound instruction lines into atomic steps before extraction, run once per recipe over the
+in-memory `Recipe.instructions` only. Confirmed live: it correctly split the compound line into
+`"Dissolve baking soda in hot water."` / `"Add dissolved baking soda to batter."` / `"Add salt to
+batter."`, and the `removal` edit then only popped the first of those three — the salt-deletion
+collateral damage from above is fixed.
+
+**But it surfaced a new, different failure, reproduced identically on two separate runs (same
+review, `temperature=0.1`):** the review's cream-of-tartar `addition` modification came back as:
+```json
+{
+    "modification_type": "addition",
+    "reasoning": "To enhance the flavor and texture of the cookies",
+    "edits": [
+        { "target": "ingredients", "operation": "add_after",
+          "find": "Add salt to batter.", "add": "1 teaspoon cream of tartar" }
+    ]
+}
+```
+`target: "ingredients"`, but `find: "Add salt to batter."` is one of the new **instruction** steps
+the synthesizer just created — it doesn't exist anywhere in `ingredients`. `apply_edit` searches
+`ingredients` for it, finds nothing close to the `0.6` threshold, and correctly logs:
+```
+WARNING - Could not find target 'Add salt to batter.' for addition
+Applied modification successfully: 0 changes made
+```
+The cream-of-tartar tweak is dropped this run. Likely cause (not code-proven): the synthesizer's
+new, short, "batter"-flavored instruction line is a closer textual match to "added ... to the
+batter" than any real ingredient line, so the model anchored `find` on it — but left `target` set
+to `"ingredients"` (arguably because cream of tartar is conceptually an ingredient), producing an
+internally inconsistent edit.
+
+**Important distinction from the bug above:** this is not a silent failure. `target`/`find` were
+inconsistent, `find_best_match` correctly found no match in the declared list, and the drop was
+logged and reflected in `enhancement_summary.total_changes` (4 instead of 5). The fuzzy-match
+threshold did its job — it rejected a bad match instead of accepting one. The bug is upstream, at
+extraction: the LLM produced an edit where `target` and `find` disagree with each other.
+
+**Fix (designed, not yet implemented):**
+1. **Cross-list fallback check in `RecipeModifier.apply_edit`** — the real fix. Give `apply_edit`
+   access to *both* `ingredients` and `instructions` (today it only ever receives whichever one
+   `target` names). When the declared-list search fails, search the *other* list before giving up:
+   - match there at `≥ 0.9` similarity → apply it there instead, log loudly that `target` was
+     mislabeled by extraction.
+   - match there below `0.9` (or no match) → still drop the edit, flag it as genuinely unmatched.
+   - `0.9` is deliberately much stricter than the normal `0.6` apply threshold — this bar means
+     "confident enough to override what the LLM explicitly declared," not just "plausible."
+2. **Prompt nudge** (`SYSTEM_PROMPT`) — tell the model to verify `find` actually belongs to the
+   list named by `target` before finalizing an edit. Cheap, reduces frequency, but per this whole
+   session's pattern, prompt instructions are probabilistic — #1 is the actual guarantee, this is
+   just a frequency reducer.
+3. **Surface flagged/corrected edits in the saved output**, not just terminal logs — add something
+   like `unmatched_edits` to `ModificationApplied` recording *why* an edit was dropped or where a
+   `target` mismatch was auto-corrected, so a reviewer sees it in the JSON, not just in scrollback.
+   Same "fail loud, don't hide it" principle as the rest of this doc.

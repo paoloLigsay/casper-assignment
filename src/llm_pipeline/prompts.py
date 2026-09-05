@@ -235,3 +235,25 @@ Output a JSON object with this structure:
 }}
 
 Focus on concrete changes the user actually made, not general suggestions."""
+
+
+def build_instruction_synthesis_prompt(instructions: list) -> str:
+    """Build a prompt that splits compound instruction steps into atomic steps."""
+    return f"""You are an expert recipe editor. You will be given a recipe's instruction steps as a
+JSON list. Some steps bundle multiple distinct actions into one step - for example, "Dissolve baking
+soda in hot water. Add to batter along with salt." is two unrelated actions sharing one step.
+
+Split any step that contains more than one distinct action into separate steps, one action per step.
+Each resulting step must be self-contained and read correctly on its own - rewrite pronouns or
+implicit references (e.g. "add it to the batter") so the step does not depend on the step before or
+after it. Preserve the original order of actions. Do not change, add, or remove any ingredient,
+quantity, temperature, or timing mentioned - this is a splitting and rewriting task only, never a
+content edit. If a step already contains exactly one action, leave it unchanged.
+
+Instructions:
+{instructions}
+
+Output a JSON object with this structure:
+{{
+    "instructions": ["step 1", "step 2", ...]
+}}"""
