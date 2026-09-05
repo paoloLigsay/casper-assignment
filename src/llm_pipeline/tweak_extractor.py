@@ -138,11 +138,11 @@ class TweakExtractor:
             return [], None
 
         # Select one random review
-        # selected_review = random.choice(modification_reviews)
+        selected_review = random.choice(modification_reviews)
         # Debug override: force a specific review instead of random selection.
         # modification_reviews[1] is "These are awesome cookies..." for the
         # chocolate chip cookie recipe.
-        selected_review = modification_reviews[1]
+        # selected_review = modification_reviews[1]
         logger.info(f"Selected review:\n{selected_review.text}")
 
         modifications = self.extract_modifications(selected_review, recipe)

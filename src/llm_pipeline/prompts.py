@@ -33,7 +33,12 @@ separately - do not merge unrelated changes into a single entry, even if they ap
 sentence. Only group edits together under one modification when they are part of the same single
 change (e.g. two edits that both implement "increased the brown sugar ratio"). Example: "I added
 an egg and halved the sugar" is TWO modifications - an "addition" and a "quantity_adjustment" -
-not one."""
+not one.
+
+Before finalizing each edit, double-check that `find` actually belongs to the list named by
+`target`: an ingredient line (e.g. "1 cup white sugar") for `target: "ingredients"`, an
+instruction step (e.g. "Preheat the oven to 350 degrees F.") for `target: "instructions"`. Never
+set `find` to text from one list while `target` names the other."""
 
 EXTRACTION_PROMPT = """Original Recipe:
 Title: {title}
