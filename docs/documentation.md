@@ -169,6 +169,8 @@ naming.
 
 Hi team,
 
+I wasn't able to sit down for 4 hours straight since it was the weekend on my end, but I made sure to keep the total time within the 4-hour limit by breaking it into shorter sessions. I hope that's okay!
+
 Happy to know your thoughts:
 - Where things are great
 - Thoughts on my take to future improvements
