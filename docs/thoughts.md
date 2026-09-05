@@ -1,172 +1,168 @@
-# Open Questions / Thoughts — to validate one by one
+# Thoughts & Notes (Plain-Language Version)
 
-Raised during code walkthrough on 2026-09-04. Not yet validated against the assignment brief or
-prioritized — just captured here so we don't lose them. Pointers to relevant code included for
-when we sit down to check each one.
-
----
-
-## 1. Should review selection favor rating?
-
-Right now `TweakExtractor.extract_single_modification()` (`src/llm_pipeline/tweak_extractor.py:136`)
-does `random.choice(modification_reviews)` — every `has_modification=True` review has equal odds,
-regardless of star rating. A 5-star review saying "I added an egg and it's perfect" and a 3-star
-review saying "I tried X and it didn't really help" are equally likely to be selected.
-
-Question: should selection weight toward (or filter to) higher-rated reviews, on the theory that a
-tweak from a well-received review is more likely to be a genuine improvement than one from a
-middling review? Or is rating orthogonal to whether the *modification itself* worked (e.g. a 3-star
-review might rate the base recipe low but still describe a tweak that helped)?
-
-To check: `Review.rating` (`src/llm_pipeline/models.py:142`) is already parsed and available at
-selection time — nothing structural blocks using it, it's just unused for selection today.
+This is a running notebook of ideas, questions, and problems found while working through this
+project, written in the order things actually happened. It's meant to be readable by someone who
+isn't a programmer — technical details (file names, line numbers) are kept in small "for
+developers" notes so nothing is lost, but they're not required reading to follow the story.
 
 ---
 
-## 2. If the selected review fails extraction, does the pipeline try another review, or just give up?
+## How this went, in order
 
-Confirmed by tracing the code (no fallback exists):
+Before touching any code, I spent time writing `CLAUDE.md` and the `docs/` files
+(`architecture.md`, `business-context.md`) so that Claude would be aligned with the actual product
+goal — a recipe that genuinely reflects trustworthy community changes — not just whatever narrow
+task I happened to type in a given message.
 
-- `extract_single_modification()` picks exactly one review via `random.choice()`
-  (`src/llm_pipeline/tweak_extractor.py:136`), calls `extract_modification()` on it once
-  (`:139`). If that returns `None` (JSON parse failure or Pydantic `ValidationError` after
-  exhausting `max_retries=2` — see `:66-111`), it returns `(None, None)` — there is no loop back to
-  `modification_reviews` to try a different candidate.
-- `pipeline.py:152-154` then bails the whole recipe: `if not modification or not source_review:
-  return None`.
-- One recipe's failure doesn't stop other recipes (`process_recipe_directory` loops over recipe
-  *files* independently, `pipeline.py:212-220`) — but within a single recipe, if the one randomly
-  chosen review fails extraction, the other 3 (for cookies) modification-flagged reviews are never
-  attempted. The recipe just produces no output for that run.
+From there, I read through the codebase and started testing it live, which raised two questions
+right away, before I'd even hit what I'd call a real bug:
 
-Question: should extraction retry with a different candidate review from `modification_reviews`
-before giving up on the recipe entirely, instead of failing on the first (only) pick?
+### Should the system prefer reviews with higher star ratings?
 
-To check: whether this is worth fixing standalone, or folds into the larger "process all flagged
-reviews, not just one" fix (`docs/tasks.md` item 1) — if that fix lands, this failure mode mostly
-disappears since every review gets attempted anyway.
+Right now, when the system picks a review to learn a recipe tweak from, it picks completely at
+random out of all the reviews that mention a change — a 5-star review and a 3-star review have
+the exact same chance of being picked.
 
-## 3. Direction Hint: 
-"""
-Are we certain that the system parses out ALL the intended modifications?
-E.g. If the review says “I added an egg and halved the sugar” -> these are two discrete modifications!
-"""
+Question: should a tweak from a review people rated highly be trusted more than one from a review
+people rated lower? Or does the star rating not really tell you whether the *specific tweak*
+worked, just whether the person liked the recipe overall?
 
-Solution :
--> Make sure we support multiple modification, a list instead of One (Schema). 
--> Update prompt:
-a. SYSTEM_PROMPT to support discrete modifications
-b. build_simple_prompt: to update the JSON structure
+*(For developers: `TweakExtractor.extract_single_modification()`, `tweak_extractor.py:136`. The
+rating is already parsed and available — nothing stops us from using it, we just don't yet.)*
 
-## 4. Direction Hint:
-"""
-Does the system scale beyond the 5 examples we gave? Are there poor assumptions embedded in the current implementation?
-"""
+### If the chosen review doesn't work out, should the system try a different one?
 
-## Challenges | Cases / Issues found during testing
-### a. There are cases where 1 instruction contains 2 actions causing silent fail during modification
-E.g., "Dissolve baking soda in hot water. Add to batter along with salt."
+Today, if the system picks a review and then fails to turn it into a usable change (for example,
+the AI's response comes back malformed), the whole thing just gives up — even if there were three
+other perfectly good reviews sitting right there that were never even attempted.
 
-**What happened (live evidence, chocolate chip cookie recipe, cream-of-tartar review):**
-The review says 4 things, including "(2) I omitted the water." The LLM correctly identified this
-as a `removal` modification, but expressed it as:
-```json
-{
-    "modification_type": "removal",
-    "reasoning": "To simplify the recipe and potentially improve the texture",
-    "edits": [
-        { "target": "instructions", "operation": "remove",
-          "find": "Dissolve baking soda in hot water. Add to batter along with salt." }
-    ]
-}
-```
-`RecipeModifier.apply_edit`'s `remove` branch (`src/llm_pipeline/recipe_modifier.py:123-139`) does
-`modified_content.pop(index)` — it deletes the entire matched **list item**, not a sub-string within
-it. `find` matched that instruction line at `similarity: 1.00` (an exact match), so it popped
-cleanly. Two things went wrong as a result:
-1. The instruction line was doing two unrelated jobs at once — "dissolve baking soda in hot water"
-   AND "add salt to the batter" — because the source recipe stores it as a single array element.
-   Removing "the water part" took "add salt" down with it. The final recipe still lists
-   `"0.5 teaspoon salt"` as an ingredient but no instruction anywhere tells you to use it.
-2. The actual ingredient line, `"2 teaspoons hot water"`, was never touched — no edit ever had
-   `target: "ingredients"` for it. The model treated the instruction-side removal as covering the
-   whole "omit the water" tweak and never circled back to the ingredient list.
+Question: should it fall back and try one of the other reviews instead of giving up entirely?
 
-**Why it's silent:** every log line reports success — `similarity: 1.00`, "Removed ... successfully",
-`enhancement_summary.total_changes` increments normally. Nothing errors, warns, or fails a check,
-because mechanically everything happened exactly as instructed. The failure is semantic (wrong
-scope), not mechanical (no match failure, no exception).
+*(For developers: no fallback loop exists — confirmed by reading `tweak_extractor.py:136-145` and
+`pipeline.py:152-154`. This may become less important if we fix "only one review is ever used"
+more broadly, since then every review gets a chance anyway.)*
 
-**Root cause:** `remove`/`replace` operate at whole-list-item granularity
-(`src/llm_pipeline/recipe_modifier.py:apply_edit`), but the source recipe's `instructions` list
-sometimes crams multiple independent actions into one array element (period-separated sentences
-sharing one list item). Any edit targeting one of those actions risks taking the others with it.
+---
 
-**Fix direction (discussed, not yet implemented):**
-1. Add a preprocessing "synthesizer" pass — run once per recipe, before extraction, over the
-   in-memory `Recipe.instructions` only (never touching the source `data/recipe_*.json` file) —
-   that splits compound instruction lines into one atomic action per list item, rewritten to stay
-   self-contained (not just split on periods, since naive splitting can break implicit references
-   like "add **it** to the batter"). This prevents the collateral-deletion half of the bug, since
-   `remove`/`replace` would then only ever be able to pop a single atomic action.
-2. This does **not** by itself fix the missing-ingredient-removal half (`"2 teaspoons hot water"`
-   never removed) — that needs the separate prompt-scope fix already noted in item 3's direction
-   (checking that an edit's `find` scope matches what `reasoning` actually describes).
+## 1. Direction Hint
 
-### b. There are cases where an edit's target list doesn't match where its find text actually lives, causing the edit to be dropped
+Before testing, I'd read through and thought about this hint:
 
-The instruction-synthesizer pass above (item 1's fix direction) was implemented — it splits
-compound instruction lines into atomic steps before extraction, run once per recipe over the
-in-memory `Recipe.instructions` only. Confirmed live: it correctly split the compound line into
-`"Dissolve baking soda in hot water."` / `"Add dissolved baking soda to batter."` / `"Add salt to
-batter."`, and the `removal` edit then only popped the first of those three — the salt-deletion
-collateral damage from above is fixed.
+> Are we certain that the system parses out ALL the intended modifications? E.g. If the review
+> says "I added an egg and halved the sugar" -> these are two discrete modifications!
 
-**But it surfaced a new, different failure, reproduced identically on two separate runs (same
-review, `temperature=0.1`):** the review's cream-of-tartar `addition` modification came back as:
-```json
-{
-    "modification_type": "addition",
-    "reasoning": "To enhance the flavor and texture of the cookies",
-    "edits": [
-        { "target": "ingredients", "operation": "add_after",
-          "find": "Add salt to batter.", "add": "1 teaspoon cream of tartar" }
-    ]
-}
-```
-`target: "ingredients"`, but `find: "Add salt to batter."` is one of the new **instruction** steps
-the synthesizer just created — it doesn't exist anywhere in `ingredients`. `apply_edit` searches
-`ingredients` for it, finds nothing close to the `0.6` threshold, and correctly logs:
-```
-WARNING - Could not find target 'Add salt to batter.' for addition
-Applied modification successfully: 0 changes made
-```
-The cream-of-tartar tweak is dropped this run. Likely cause (not code-proven): the synthesizer's
-new, short, "batter"-flavored instruction line is a closer textual match to "added ... to the
-batter" than any real ingredient line, so the model anchored `find` on it — but left `target` set
-to `"ingredients"` (arguably because cream of tartar is conceptually an ingredient), producing an
-internally inconsistent edit.
+Sure enough, once I actually ran the pipeline, this is exactly the kind of issue that showed up.
 
-**Important distinction from the bug above:** this is not a silent failure. `target`/`find` were
-inconsistent, `find_best_match` correctly found no match in the declared list, and the drop was
-logged and reflected in `enhancement_summary.total_changes` (4 instead of 5). The fuzzy-match
-threshold did its job — it rejected a bad match instead of accepting one. The bug is upstream, at
-extraction: the LLM produced an edit where `target` and `find` disagree with each other.
+**Fix 1 — A review describing several changes was only ever recorded as ONE change**
 
-**Fix (designed, not yet implemented):**
-1. **Cross-list fallback check in `RecipeModifier.apply_edit`** — the real fix. Give `apply_edit`
-   access to *both* `ingredients` and `instructions` (today it only ever receives whichever one
-   `target` names). When the declared-list search fails, search the *other* list before giving up:
-   - match there at `≥ 0.9` similarity → apply it there instead, log loudly that `target` was
-     mislabeled by extraction.
-   - match there below `0.9` (or no match) → still drop the edit, flag it as genuinely unmatched.
-   - `0.9` is deliberately much stricter than the normal `0.6` apply threshold — this bar means
-     "confident enough to override what the LLM explicitly declared," not just "plausible."
-2. **Prompt nudge** (`SYSTEM_PROMPT`) — tell the model to verify `find` actually belongs to the
-   list named by `target` before finalizing an edit. Cheap, reduces frequency, but per this whole
-   session's pattern, prompt instructions are probabilistic — #1 is the actual guarantee, this is
-   just a frequency reducer.
-3. **Surface flagged/corrected edits in the saved output**, not just terminal logs — add something
-   like `unmatched_edits` to `ModificationApplied` recording *why* an edit was dropped or where a
-   `target` mismatch was auto-corrected, so a reviewer sees it in the JSON, not just in scrollback.
-   Same "fail loud, don't hide it" principle as the rest of this doc.
+The problem: if a review said "I added an egg and halved the sugar," that's two separate changes.
+But the system could only ever store one "type" of change per review, so it would either mislabel
+one of the two, or just drop it.
+
+What we changed: updated the data structure so the system can record a *list* of separate changes
+instead of being boxed into one, and told the AI explicitly (in its instructions) to list out
+every distinct change on its own instead of merging them together.
+
+**Status: Done.** Tested directly with the exact "added an egg and halved the sugar" sentence — it
+now correctly comes back as two separate, properly labeled changes.
+
+*(For developers: new `ModificationExtractionResult` wrapper in `models.py`; prompt and JSON
+schema updated in `prompts.py`; `pipeline.py` now loops through the list via
+`RecipeModifier.apply_modifications_batch`.)*
+
+---
+
+## 2. Fix 2 — Splitting up recipe steps that were secretly doing two jobs
+
+While testing Fix 1, a new issue turned up: if a single instruction line contains two actions, the
+AI can end up removing both of them together — the second action becomes collateral damage of
+removing the first, purely because they happen to live in the same line.
+
+Concrete example: a recipe step read *"Dissolve baking soda in hot water. Add to batter along with
+salt."* That's really two separate instructions squeezed into one array item. A review said "I
+left out the water" — the system correctly understood this meant *remove* something, but because
+both instructions were glued together, removing the water part silently deleted the salt part too.
+Nobody told it to touch the salt, but it disappeared anyway. Nothing about this looked like an
+error — every log line said "success."
+
+What we changed: added a clean-up pass that runs *before* the AI even looks at making changes. It
+goes through the recipe's steps once and splits any step doing two unrelated things into two
+separate, complete steps that each make sense on their own.
+
+**Status: Done.** Re-tested the exact case above — the salt instruction no longer disappears when
+the water gets removed.
+
+*(For developers: `RecipeModifier.apply_edit`'s `remove` branch, `recipe_modifier.py:123-139`,
+deletes a whole list item, not a piece of text within it — that's the root cause. New
+`InstructionSynthesizer` class + `NormalizedInstructions` model, wired into `pipeline.py` right
+after loading the recipe, before extraction. Runs once per recipe, only changes the in-memory
+copy, never touches the source `data/recipe_*.json` file.)*
+
+---
+
+## 3. Fix 3 — Checking the other list before giving up
+
+Testing Fix 2 surfaced yet another issue. In the results, I noticed an edit had been labeled as
+belonging to the ingredients list, but the actual text it was trying to find only existed in the
+instructions list. Since the system only ever looked where it was told to look, it found nothing
+and dropped the change — a community-suggested tweak (adding cream of tartar) didn't make it into
+the final recipe. Unlike Fix 2's issue, this one wasn't silent — the system correctly logged that
+it couldn't find the text, it just didn't know to look anywhere else.
+
+What we changed: if the system can't find something where it was told to look, it now checks the
+*other* list before giving up. A very strong match there (not just a plausible one) means it uses
+that instead of throwing the change away; still no match anywhere means it drops it, same as
+before.
+
+**Status: Done.** Verified directly with the exact broken edit from testing — the system now
+correctly recovers it instead of dropping it.
+
+*(For developers: `RecipeModifier.apply_edit` now receives both `ingredients` and `instructions`.
+A match of `≥ 0.9` similarity in the other list triggers the fallback — deliberately stricter than
+the normal `0.6` threshold, since this overrides what the AI explicitly declared rather than just
+confirming a plausible line. Also added a short reminder in the AI's instructions to double-check
+it's naming the right list.)*
+
+---
+
+## 4. Things I Pushed Back On
+
+Related to Fix 3: while building it, the fix also started recording every dropped or corrected
+edit inside the saved recipe file itself, in case an edit couldn't be matched anywhere. I hadn't
+actually hit that case yet — it was added on the assumption it *might* happen, not because it had.
+
+I pushed back on this. Our existing guardrails (the matching threshold, the fallback check itself)
+already handle the situation correctly by dropping the edit and logging it; adding a whole
+extra field and code path to record something we hadn't yet observed is scope creep — noise
+outside of what we actually set out to fix. A fix should stay focused on the problem it's solving,
+not preemptively build handling for cases we're only guessing might occur. It was removed, keeping
+only the part that actually fixes the wrong-list problem.
+
+---
+
+## Should this be a fixed checklist of fixes, or a workflow of specialized "nodes" checking each other's work?
+
+Core idea: **deterministic validation pass first, LLM second.**
+
+Right now, every new failure mode gets patched with another specific rule bolted onto one fixed
+pipeline (split compound steps, check the other list, and so on) — each fix reasonable alone, but
+each also risking a new edge case we hadn't planned for, which is exactly the pattern this session
+kept hitting.
+
+Alternative worth considering: a small workflow of specialized steps that check each other's work
+instead of one growing list of special cases — e.g. an extraction step, then a separate
+cross-checking step whose only job is asking "does this change hang together across both
+ingredients and instructions, whatever type of change it is?" (Tools like LangGraph exist for
+wiring up this kind of multi-step workflow.) The hard, deterministic rules we already have — exact
+matching, the similarity threshold — would stay exactly as they are; this would just add a general
+review layer on top instead of one rule per bug found. Not something to build immediately — a
+genuine tradeoff between more moving parts and fewer bugs discovered one at a time — but worth
+naming.
+
+---
+
+## Does the system scale beyond the 5 examples we gave? Are there poor assumptions embedded in the current implementation?
+
+Still an open question — we haven't specifically stress-tested this beyond what's already written
+up in `docs/architecture.md`'s scaling table (which shows 2 of the 6 sample recipes have no
+reviews at all, so they can never produce anything, regardless of any fix).
