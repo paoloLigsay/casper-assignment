@@ -45,6 +45,19 @@ class ModificationObject(BaseModel):
     edits: List[ModificationEdit] = Field(description="List of atomic edits to apply")
 
 
+class ModificationExtractionResult(BaseModel):
+    """Wrapper for the discrete modifications extracted from a single review.
+
+    A review can describe several distinct changes (e.g. "added an egg and halved
+    the sugar" = an addition + a quantity_adjustment) - each becomes its own
+    ModificationObject here rather than being forced under one shared type.
+    """
+
+    modifications: List[ModificationObject] = Field(
+        description="One entry per distinct modification described in the review"
+    )
+
+
 class SourceReview(BaseModel):
     """Reference to the original review that suggested the modification."""
 

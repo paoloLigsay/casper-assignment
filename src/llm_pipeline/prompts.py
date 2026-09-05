@@ -26,7 +26,14 @@ Edit operations:
 - "add_after": Add new text after finding target text
 - "remove": Remove text that matches the find pattern
 
-Be precise with text matching - use the exact text from the original recipe when possible."""
+Be precise with text matching - use the exact text from the original recipe when possible.
+
+A review often describes more than one distinct change. Identify EVERY discrete modification
+separately - do not merge unrelated changes into a single entry, even if they appear in the same
+sentence. Only group edits together under one modification when they are part of the same single
+change (e.g. two edits that both implement "increased the brown sugar ratio"). Example: "I added
+an egg and halved the sugar" is TWO modifications - an "addition" and a "quantity_adjustment" -
+not one."""
 
 EXTRACTION_PROMPT = """Original Recipe:
 Title: {title}
@@ -206,18 +213,23 @@ Instructions: {instructions}
 User Review: "{review_text}"
 
 Extract the recipe modifications from this review. The user has made changes to improve the recipe.
+If the review describes multiple distinct changes, list each one as its own entry in "modifications".
 
 Output a JSON object with this structure:
 {{
-    "modification_type": "quantity_adjustment|ingredient_substitution|technique_change|addition|removal",
-    "reasoning": "Brief explanation of why this modification improves the recipe",
-    "edits": [
+    "modifications": [
         {{
-            "target": "ingredients|instructions",
-            "operation": "replace|add_after|remove",
-            "find": "exact text to find",
-            "replace": "replacement text (for replace operations)",
-            "add": "text to add (for add_after operations)"
+            "modification_type": "quantity_adjustment|ingredient_substitution|technique_change|addition|removal",
+            "reasoning": "Brief explanation of why this modification improves the recipe",
+            "edits": [
+                {{
+                    "target": "ingredients|instructions",
+                    "operation": "replace|add_after|remove",
+                    "find": "exact text to find",
+                    "replace": "replacement text (for replace operations)",
+                    "add": "text to add (for add_after operations)"
+                }}
+            ]
         }}
     ]
 }}

@@ -9,6 +9,7 @@ This module coordinates the complete 3-step pipeline:
 Processes recipe data from scraped JSON files and outputs enhanced recipes.
 """
 
+import difflib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -113,6 +114,23 @@ class LLMAnalysisPipeline:
 
         return reviews
 
+    def _log_list(self, label: str, items: List[str]) -> None:
+        """Log a list of strings one per line instead of as a single-line repr."""
+        numbered = "\n".join(f"  {i}. {item}" for i, item in enumerate(items, 1))
+        logger.info(f"{label} ({len(items)}):\n{numbered}")
+
+    def _log_diff(self, label: str, before: List[str], after: List[str]) -> None:
+        """Log a unified diff between the original and modified ingredient/instruction lists."""
+        diff_lines = list(
+            difflib.unified_diff(
+                before, after, fromfile=f"original {label}", tofile=f"enhanced {label}", lineterm=""
+            )
+        )
+        if diff_lines:
+            logger.info(f"{label} diff:\n" + "\n".join(diff_lines))
+        else:
+            logger.info(f"{label}: no changes")
+
     def process_single_recipe(
         self, recipe_file: str, save_output: bool = True
     ) -> Optional[EnhancedRecipe]:
@@ -134,7 +152,9 @@ class LLMAnalysisPipeline:
             recipe = self.parse_recipe_data(recipe_data)
             reviews = self.parse_reviews_data(recipe_data)
 
-            logger.info(f"Loaded recipe: {recipe.title}")
+            logger.info(f"Recipe: {recipe.title}")
+            self._log_list("Ingredients", recipe.ingredients)
+            self._log_list("Instructions", recipe.instructions)
             logger.info(
                 f"Found {len(reviews)} reviews, {len([r for r in reviews if r.has_modification])} with modifications"
             )
@@ -143,35 +163,41 @@ class LLMAnalysisPipeline:
                 logger.warning("No reviews with modifications found")
                 return None
 
-            # Step 1: Extract modification from one random review
-            logger.info("Step 1: Extracting modification from a single review...")
-            modification, source_review = (
-                self.tweak_extractor.extract_single_modification(reviews, recipe)
+            # Step 1: Extract modifications from one random review
+            logger.info("Step 1: Extracting modifications from a single review...")
+            modifications, source_review = (
+                self.tweak_extractor.extract_modifications_from_review(reviews, recipe)
             )
 
-            if not modification or not source_review:
-                logger.warning("No modification could be extracted")
+            if not modifications or not source_review:
+                logger.warning("No modifications could be extracted")
                 return None
 
-            logger.info(
-                f"Successfully extracted {modification.modification_type} modification"
+            self._log_list(
+                "Extracted modifications",
+                [m.modification_type for m in modifications],
             )
 
-            # Step 2: Apply modification to recipe
-            logger.info("Step 2: Applying modification to recipe...")
-            modified_recipe, change_records = self.recipe_modifier.apply_modification(
-                recipe, modification
+            # Step 2: Apply modifications to recipe
+            logger.info("Step 2: Applying modifications to recipe...")
+            modified_recipe, change_records_per_modification = (
+                self.recipe_modifier.apply_modifications_batch(recipe, modifications)
             )
 
-            logger.info(
-                f"Applied modification: {len(change_records)} total changes made"
-            )
+            total_changes = sum(len(cr) for cr in change_records_per_modification)
+            logger.info(f"Applied modifications: {total_changes} total changes made")
+            self._log_diff("Ingredients", recipe.ingredients, modified_recipe.ingredients)
+            self._log_diff("Instructions", recipe.instructions, modified_recipe.instructions)
 
             # Step 3: Generate enhanced recipe with attribution
             logger.info("Step 3: Generating enhanced recipe with attribution...")
 
             enhanced_recipe = self.enhanced_generator.generate_enhanced_recipe(
-                recipe, modified_recipe, modification, source_review, change_records
+                recipe,
+                modified_recipe,
+                modifications,
+                source_review,
+                change_records_per_modification,
             )
 
             logger.info(f"Generated enhanced recipe: {enhanced_recipe.title}")

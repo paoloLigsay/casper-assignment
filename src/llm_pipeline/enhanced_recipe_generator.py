@@ -112,9 +112,9 @@ class EnhancedRecipeGenerator:
         self,
         original_recipe: Recipe,
         modified_recipe: Recipe,
-        modification: ModificationObject,
+        modifications: List[ModificationObject],
         source_review: Review,
-        change_records: List[ChangeRecord],
+        change_records_per_modification: List[List[ChangeRecord]],
     ) -> EnhancedRecipe:
         """
         Generate a complete enhanced recipe with attribution.
@@ -122,20 +122,23 @@ class EnhancedRecipeGenerator:
         Args:
             original_recipe: Original unmodified recipe
             modified_recipe: Recipe with modifications applied
-            modification: Single modification that was applied
-            source_review: Review that suggested the modification
-            change_records: Changes made for the modification
+            modifications: Discrete modifications extracted from the review
+            source_review: Review that suggested the modifications
+            change_records_per_modification: Changes made, one list per modification,
+                same order as `modifications`
 
         Returns:
             Complete EnhancedRecipe with attribution
         """
         logger.info(f"Generating enhanced recipe for: {original_recipe.title}")
 
-        # Create modification applied record
-        modification_applied = self.create_modification_applied(
-            modification, source_review, change_records
-        )
-        modifications_applied = [modification_applied]
+        # Create one ModificationApplied record per discrete modification
+        modifications_applied = [
+            self.create_modification_applied(modification, source_review, change_records)
+            for modification, change_records in zip(
+                modifications, change_records_per_modification
+            )
+        ]
 
         # Calculate enhancement summary
         enhancement_summary = self.calculate_enhancement_summary(modifications_applied)

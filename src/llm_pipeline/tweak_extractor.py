@@ -8,13 +8,13 @@ ModificationObject instances.
 
 import json
 import os
-from typing import Optional
+from typing import List, Optional
 
 from loguru import logger
 from openai import OpenAI
 from pydantic import ValidationError
 
-from .models import ModificationObject, Recipe, Review
+from .models import ModificationExtractionResult, ModificationObject, Recipe, Review
 from .prompts import build_simple_prompt
 
 
@@ -33,14 +33,17 @@ class TweakExtractor:
         self.model = model
         logger.info(f"Initialized TweakExtractor with model: {model}")
 
-    def extract_modification(
+    def extract_modifications(
         self,
         review: Review,
         recipe: Recipe,
         max_retries: int = 2,
-    ) -> Optional[ModificationObject]:
+    ) -> List[ModificationObject]:
         """
-        Extract a structured modification from a review.
+        Extract all structured modifications described in a review.
+
+        A single review can describe several discrete changes (e.g. "added an egg
+        and halved the sugar"), so this returns a list rather than one modification.
 
         Args:
             review: Review object containing modification text
@@ -48,20 +51,18 @@ class TweakExtractor:
             max_retries: Number of retry attempts if parsing fails
 
         Returns:
-            ModificationObject if extraction successful, None otherwise
+            List of ModificationObject (empty if extraction failed)
         """
         if not review.has_modification:
             logger.warning("Review has no modification flag set")
-            return None
+            return []
 
         # Build the prompt - use simple prompt to avoid format string issues
         prompt = build_simple_prompt(
             review.text, recipe.title, recipe.ingredients, recipe.instructions
         )
 
-        logger.debug(
-            "Extracting modification from review: {}...".format(review.text[:100])
-        )
+        logger.debug(f"Extracting modifications from review: {review.text}")
 
         for attempt in range(max_retries + 1):
             try:
@@ -83,13 +84,16 @@ class TweakExtractor:
 
                 # Parse and validate the JSON response
                 modification_data = json.loads(raw_output)
-                modification = ModificationObject(**modification_data)
+                result = ModificationExtractionResult(**modification_data)
 
-                logger.info(
-                    f"Successfully extracted {modification.modification_type} "
-                    f"modification with {len(modification.edits)} edits"
+                types_list = "\n".join(
+                    f"  {i}. {m.modification_type}"
+                    for i, m in enumerate(result.modifications, 1)
                 )
-                return modification
+                logger.info(
+                    f"Successfully extracted {len(result.modifications)} modification(s):\n{types_list}"
+                )
+                return result.modifications
 
             except json.JSONDecodeError as e:
                 logger.warning(f"Attempt {attempt + 1}: Failed to parse JSON: {e}")
@@ -106,22 +110,23 @@ class TweakExtractor:
             except Exception as e:
                 logger.error(f"Attempt {attempt + 1}: Unexpected error: {e}")
                 if attempt == max_retries:
-                    return None
+                    return []
 
-        return None
+        return []
 
-    def extract_single_modification(
+    def extract_modifications_from_review(
         self, reviews: list[Review], recipe: Recipe
-    ) -> tuple[ModificationObject, Review] | tuple[None, None]:
+    ) -> tuple[List[ModificationObject], Review] | tuple[List[ModificationObject], None]:
         """
-        Extract modification from a single randomly selected review.
+        Extract modifications from a single randomly selected review.
 
         Args:
             reviews: List of reviews to choose from
             recipe: Original recipe being modified
 
         Returns:
-            Tuple of (ModificationObject, source_Review) if successful, (None, None) otherwise
+            Tuple of (list_of_ModificationObject, source_Review). The list is empty
+            and source_Review is None if no candidate review or extraction failed.
         """
         import random
 
@@ -130,23 +135,27 @@ class TweakExtractor:
 
         if not modification_reviews:
             logger.warning("No reviews with modifications found")
-            return None, None
+            return [], None
 
         # Select one random review
-        selected_review = random.choice(modification_reviews)
-        logger.info(f"Selected review: {selected_review.text[:100]}...")
+        # selected_review = random.choice(modification_reviews)
+        # Debug override: force a specific review instead of random selection.
+        # modification_reviews[1] is "These are awesome cookies..." for the
+        # chocolate chip cookie recipe.
+        selected_review = modification_reviews[1]
+        logger.info(f"Selected review:\n{selected_review.text}")
 
-        modification = self.extract_modification(selected_review, recipe)
-        if modification:
-            logger.info("Successfully extracted modification from selected review")
-            return modification, selected_review
+        modifications = self.extract_modifications(selected_review, recipe)
+        if modifications:
+            logger.info("Successfully extracted modifications from selected review")
+            return modifications, selected_review
         else:
-            logger.warning("Failed to extract modification from selected review")
-            return None, None
+            logger.warning("Failed to extract modifications from selected review")
+            return [], None
 
     def test_extraction(
         self, review_text: str, recipe_data: dict
-    ) -> Optional[ModificationObject]:
+    ) -> List[ModificationObject]:
         """
         Test extraction with raw text and recipe data.
 
@@ -155,7 +164,7 @@ class TweakExtractor:
             recipe_data: Raw recipe dictionary
 
         Returns:
-            ModificationObject if successful
+            List of ModificationObject
         """
         review = Review(text=review_text, has_modification=True)
         recipe = Recipe(
@@ -165,4 +174,4 @@ class TweakExtractor:
             instructions=recipe_data.get("instructions", []),
         )
 
-        return self.extract_modification(review, recipe)
+        return self.extract_modifications(review, recipe)
