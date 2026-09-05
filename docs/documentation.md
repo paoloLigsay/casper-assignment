@@ -51,6 +51,9 @@ Before testing, I'd read through and thought about this hint:
 > Are we certain that the system parses out ALL the intended modifications? E.g. If the review
 > says "I added an egg and halved the sugar" -> these are two discrete modifications!
 
+> Does the system scale beyond the 5 examples we gave? Are there poor assumptions embedded in the current implementation?
+--> Fix 2: code assumes each instructions represents one atomic fact. Solution: we created a syntehsizer node / layer.
+
 Sure enough, once I actually ran the pipeline, this is exactly the kind of issue that showed up.
 
 **Fix 1 — A review describing several changes was only ever recorded as ONE change**
@@ -159,10 +162,17 @@ review layer on top instead of one rule per bug found. Not something to build im
 genuine tradeoff between more moving parts and fewer bugs discovered one at a time — but worth
 naming.
 
+## Additional Improvements:
+> Add tests that handles both happy paths and edge cases
+
 ---
 
-## Does the system scale beyond the 5 examples we gave? Are there poor assumptions embedded in the current implementation?
+Hi team,
 
-Still an open question — we haven't specifically stress-tested this beyond what's already written
-up in `docs/architecture.md`'s scaling table (which shows 2 of the 6 sample recipes have no
-reviews at all, so they can never produce anything, regardless of any fix).
+Happy to know your thoughts:
+- Where things are great
+- Thoughts on my take to future improvements
+- Where things can be improved (is my solution reasonable)
+- Do you agree / disagree with my decisions, e.g., Logic first, LLM second (for complex cases mentioned above) 
+
+Either way, thanks for this assignment, it was fun! :)
